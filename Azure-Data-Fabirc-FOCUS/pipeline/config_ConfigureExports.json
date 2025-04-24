@@ -1,0 +1,627 @@
+{
+	"name": "config_ConfigureExports",
+	"properties": {
+		"activities": [
+			{
+				"name": "Get Config",
+				"type": "Lookup",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "0.00:05:00",
+					"retry": 2,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "JsonSource",
+						"storeSettings": {
+							"type": "AzureBlobFSReadSettings",
+							"recursive": true,
+							"enablePartitionDiscovery": false
+						},
+						"formatSettings": {
+							"type": "JsonReadSettings"
+						}
+					},
+					"dataset": {
+						"referenceName": "config",
+						"type": "DatasetReference",
+						"parameters": {
+							"fileName": {
+								"value": "@variables('fileName')",
+								"type": "Expression"
+							},
+							"folderPath": {
+								"value": "@variables('folderPath')",
+								"type": "Expression"
+							}
+						}
+					}
+				}
+			},
+			{
+				"name": "Save Scopes",
+				"type": "SetVariable",
+				"dependsOn": [
+					{
+						"activity": "Get Config",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"variableName": "scopesArray",
+					"value": {
+						"value": "@activity('Get Config').output.firstRow.scopes",
+						"type": "Expression"
+					}
+				}
+			},
+			{
+				"name": "Save Scopes as Array",
+				"type": "SetVariable",
+				"dependsOn": [
+					{
+						"activity": "Save Scopes",
+						"dependencyConditions": [
+							"Failed"
+						]
+					}
+				],
+				"policy": {
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"variableName": "scopesArray",
+					"value": {
+						"value": "@array(activity('Get Config').output.firstRow.scopes)",
+						"type": "Expression"
+					}
+				}
+			},
+			{
+				"name": "Filter Invalid Scopes",
+				"type": "Filter",
+				"dependsOn": [
+					{
+						"activity": "Save Scopes",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					},
+					{
+						"activity": "Save Scopes as Array",
+						"dependencyConditions": [
+							"Skipped",
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"items": {
+						"value": "@variables('scopesArray')",
+						"type": "Expression"
+					},
+					"condition": {
+						"value": "@and(not(empty(item().scope)), not(equals(item().scope, '/')))",
+						"type": "Expression"
+					}
+				}
+			},
+			{
+				"name": "ForEach Export Scope",
+				"type": "ForEach",
+				"dependsOn": [
+					{
+						"activity": "Filter Invalid Scopes",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"items": {
+						"value": "@activity('Filter Invalid Scopes').output.value",
+						"type": "Expression"
+					},
+					"isSequential": true,
+					"activities": [
+						{
+							"name": "Set Export Type",
+							"type": "SetVariable",
+							"dependsOn": [],
+							"policy": {
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"variableName": "exportScopeType",
+								"value": {
+									"value": "@if(contains(toLower(item().scope), 'providers/microsoft.billing/billingaccounts'), if(contains(toLower(item().scope), ':'), 'mca', 'ea'), if(contains(toLower(item().scope), 'subscriptions/'), 'subscription', 'undefined'))",
+									"type": "Expression"
+								}
+							}
+						},
+						{
+							"name": "Switch Export Type",
+							"type": "Switch",
+							"dependsOn": [
+								{
+									"activity": "Set Export Type",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"userProperties": [],
+							"typeProperties": {
+								"on": {
+									"value": "@toLower(variables('exportScopeType'))",
+									"type": "Expression"
+								},
+								"cases": [
+									{
+										"value": "ea",
+										"activities": [
+											{
+												"name": "EA open month focus export",
+												"type": "WebActivity",
+												"dependsOn": [],
+												"policy": {
+													"timeout": "0.00:05:00",
+													"retry": 2,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"method": "PUT",
+													"headers": {
+														"x-ms-command-name": "FinOpsToolkit.Hubs.config_RunExportJobs.CostsDaily@0.9",
+														"ClientType": "FinOpsToolkit.Hubs@0.9"
+													},
+													"url": {
+														"value": "@{variables('resourceManagementUri')}@{item().scope}/providers/Microsoft.CostManagement/exports/@{toLower(concat(variables('finOpsHub'), '-daily-costdetails'))}?api-version=2023-07-01-preview",
+														"type": "Expression"
+													},
+													"body": {
+														"value": "{ \"properties\": { \"definition\": { \"dataSet\": { \"configuration\": { \"dataVersion\": \"1.0\", \"filters\": [] }, \"granularity\": \"Daily\" }, \"timeframe\": \"MonthToDate\", \"type\": \"FocusCost\" }, \"deliveryInfo\": { \"destination\": { \"container\": \"msexports\", \"rootFolderPath\": \"@{if(startswith(item().scope, '/'), substring(item().scope, 1, sub(length(item().scope), 1)) ,item().scope)}\", \"type\": \"AzureBlob\", \"resourceId\": \"@{variables('storageAccountId')}\" } }, \"schedule\": { \"recurrence\": \"Daily\", \"recurrencePeriod\": { \"from\": \"2024-01-01T00:00:00.000Z\", \"to\": \"2050-02-01T00:00:00.000Z\" }, \"status\": \"Inactive\" }, \"format\": \"Parquet\", \"partitionData\": \"true\", \"dataOverwriteBehavior\": \"CreateNewReport\", \"compressionMode\": \"Snappy\" }, \"id\": \"@{variables('resourceManagementUri')}@{item().scope}/providers/Microsoft.CostManagement/exports/@{toLower(concat(variables('finOpsHub'), '-daily-costdetails'))}\", \"name\": \"@{toLower(concat(variables('finOpsHub'), '-daily-costdetails'))}\", \"type\": \"Microsoft.CostManagement/reports\", \"identity\": { \"type\": \"systemAssigned\" }, \"location\": \"global\" }",
+														"type": "Expression"
+													},
+													"authentication": {
+														"type": "MSI",
+														"resource": {
+															"value": "@variables('resourceManagementUri')",
+															"type": "Expression"
+														}
+													}
+												}
+											},
+											{
+												"name": "EA closed month focus export",
+												"type": "WebActivity",
+												"dependsOn": [
+													{
+														"activity": "EA open month focus export",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"timeout": "0.00:05:00",
+													"retry": 2,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"method": "PUT",
+													"headers": {
+														"x-ms-command-name": "FinOpsToolkit.Hubs.config_RunExportJobs.CostsMonthly@0.9",
+														"ClientType": "FinOpsToolkit.Hubs@0.9"
+													},
+													"url": {
+														"value": "@{variables('resourceManagementUri')}@{item().scope}/providers/Microsoft.CostManagement/exports/@{toLower(concat(variables('finOpsHub'), '-monthly-costdetails'))}?api-version=2023-07-01-preview",
+														"type": "Expression"
+													},
+													"body": {
+														"value": "{ \"properties\": { \"definition\": { \"dataSet\": { \"configuration\": { \"dataVersion\": \"1.0\", \"filters\": [] }, \"granularity\": \"Daily\" }, \"timeframe\": \"TheLastMonth\", \"type\": \"FocusCost\" }, \"deliveryInfo\": { \"destination\": { \"container\": \"msexports\", \"rootFolderPath\": \"@{if(startswith(item().scope, '/'), substring(item().scope, 1, sub(length(item().scope), 1)) ,item().scope)}\", \"type\": \"AzureBlob\", \"resourceId\": \"@{variables('storageAccountId')}\" } }, \"schedule\": { \"recurrence\": \"Monthly\", \"recurrencePeriod\": { \"from\": \"2024-01-01T00:00:00.000Z\", \"to\": \"2050-02-01T00:00:00.000Z\" }, \"status\": \"Inactive\" }, \"format\": \"Parquet\", \"partitionData\": \"true\", \"dataOverwriteBehavior\": \"CreateNewReport\", \"compressionMode\": \"Snappy\" }, \"id\": \"@{variables('resourceManagementUri')}@{item().scope}/providers/Microsoft.CostManagement/exports/@{toLower(concat(variables('finOpsHub'), '-monthly-costdetails'))}\", \"name\": \"@{toLower(concat(variables('finOpsHub'), '-monthly-costdetails'))}\", \"type\": \"Microsoft.CostManagement/reports\", \"identity\": { \"type\": \"systemAssigned\" }, \"location\": \"global\" }",
+														"type": "Expression"
+													},
+													"authentication": {
+														"type": "MSI",
+														"resource": {
+															"value": "@variables('resourceManagementUri')",
+															"type": "Expression"
+														}
+													}
+												}
+											},
+											{
+												"name": "EA monthly pricesheet export",
+												"type": "WebActivity",
+												"dependsOn": [
+													{
+														"activity": "EA closed month focus export",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"timeout": "0.00:05:00",
+													"retry": 2,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"method": "PUT",
+													"headers": {
+														"x-ms-command-name": "FinOpsToolkit.Hubs.config_RunExportJobs.Prices@0.9",
+														"ClientType": "FinOpsToolkit.Hubs@0.9"
+													},
+													"url": {
+														"value": "@{variables('resourceManagementUri')}@{item().scope}/providers/Microsoft.CostManagement/exports/@{toLower(concat(variables('finOpsHub'), '-monthly-pricesheet'))}?api-version=2023-07-01-preview",
+														"type": "Expression"
+													},
+													"body": {
+														"value": "{ \"properties\": { \"definition\": { \"dataSet\": { \"configuration\": { \"dataVersion\": \"2023-05-01\", \"filters\": [] }}, \"timeframe\": \"TheCurrentMonth\", \"type\": \"Pricesheet\" }, \"deliveryInfo\": { \"destination\": { \"container\": \"msexports\", \"rootFolderPath\": \"@{if(startswith(item().scope, '/'), substring(item().scope, 1, sub(length(item().scope), 1)) ,item().scope)}\", \"type\": \"AzureBlob\", \"resourceId\": \"@{variables('storageAccountId')}\" } }, \"schedule\": { \"recurrence\": \"Monthly\", \"recurrencePeriod\": { \"from\": \"2024-01-01T00:00:00.000Z\", \"to\": \"2050-02-01T00:00:00.000Z\" }, \"status\": \"Inactive\" }, \"format\": \"Parquet\", \"partitionData\": \"true\", \"dataOverwriteBehavior\": \"CreateNewReport\", \"compressionMode\": \"Snappy\" }, \"id\": \"@{variables('resourceManagementUri')}@{item().scope}/providers/Microsoft.CostManagement/exports/@{toLower(concat(variables('finOpsHub'), '-monthly-pricesheet'))}\", \"name\": \"@{toLower(concat(variables('finOpsHub'), '-monthly-pricesheet'))}\", \"type\": \"Microsoft.CostManagement/reports\", \"identity\": { \"type\": \"systemAssigned\" }, \"location\": \"global\" }",
+														"type": "Expression"
+													},
+													"authentication": {
+														"type": "MSI",
+														"resource": {
+															"value": "@variables('resourceManagementUri')",
+															"type": "Expression"
+														}
+													}
+												}
+											},
+											{
+												"name": "Trigger EA monthly pricesheet export",
+												"type": "WebActivity",
+												"dependsOn": [
+													{
+														"activity": "EA monthly pricesheet export",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"timeout": "0.00:05:00",
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"method": "POST",
+													"headers": {
+														"x-ms-command-name": "FinOpsToolkit.Hubs.config_RunExportJobs.Prices@0.9",
+														"ClientType": "FinOpsToolkit.Hubs@0.9"
+													},
+													"url": {
+														"value": "@{variables('resourceManagementUri')}@{item().scope}/providers/Microsoft.CostManagement/exports/@{toLower(concat(variables('finOpsHub'), '-monthly-pricesheet'))}/run?api-version=2023-07-01-preview",
+														"type": "Expression"
+													},
+													"body": " ",
+													"authentication": {
+														"type": "MSI",
+														"resource": {
+															"value": "@variables('resourceManagementUri')",
+															"type": "Expression"
+														}
+													}
+												}
+											},
+											{
+												"name": "EA daily reservation details export",
+												"type": "WebActivity",
+												"dependsOn": [
+													{
+														"activity": "EA monthly pricesheet export",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"timeout": "0.00:05:00",
+													"retry": 2,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"method": "PUT",
+													"headers": {
+														"x-ms-command-name": "FinOpsToolkit.Hubs.config_RunExportJobs.ReservationDetails@0.9",
+														"ClientType": "FinOpsToolkit.Hubs@0.9"
+													},
+													"url": {
+														"value": "@{variables('resourceManagementUri')}@{item().scope}/providers/Microsoft.CostManagement/exports/@{toLower(concat(variables('finOpsHub'), '-daily-reservationdetails'))}?api-version=2023-07-01-preview",
+														"type": "Expression"
+													},
+													"body": {
+														"value": "{ \"properties\": { \"definition\": { \"dataSet\": { \"configuration\": { \"dataVersion\": \"2023-03-01\", \"filters\": [] }, \"granularity\": \"Daily\" }, \"timeframe\": \"MonthToDate\", \"type\": \"ReservationDetails\" }, \"deliveryInfo\": { \"destination\": { \"container\": \"msexports\", \"rootFolderPath\": \"@{if(startswith(item().scope, '/'), substring(item().scope, 1, sub(length(item().scope), 1)) ,item().scope)}\", \"type\": \"AzureBlob\", \"resourceId\": \"@{variables('storageAccountId')}\" } }, \"schedule\": { \"recurrence\": \"Daily\", \"recurrencePeriod\": { \"from\": \"2024-01-01T00:00:00.000Z\", \"to\": \"2050-02-01T00:00:00.000Z\" }, \"status\": \"Inactive\" }, \"format\": \"CSV\", \"partitionData\": \"true\", \"dataOverwriteBehavior\": \"CreateNewReport\", \"compressionMode\": \"None\" }, \"id\": \"@{variables('resourceManagementUri')}@{item().scope}/providers/Microsoft.CostManagement/exports/@{toLower(concat(variables('finOpsHub'), '-daily-reservationdetails'))}\", \"name\": \"@{toLower(concat(variables('finOpsHub'), '-daily-reservationdetails'))}\", \"type\": \"Microsoft.CostManagement/reports\", \"identity\": { \"type\": \"systemAssigned\" }, \"location\": \"global\" }",
+														"type": "Expression"
+													},
+													"authentication": {
+														"type": "MSI",
+														"resource": {
+															"value": "@variables('resourceManagementUri')",
+															"type": "Expression"
+														}
+													}
+												}
+											},
+											{
+												"name": "EA daily reservation transactions export",
+												"type": "WebActivity",
+												"dependsOn": [
+													{
+														"activity": "EA daily reservation details export",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"timeout": "0.00:05:00",
+													"retry": 2,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"method": "PUT",
+													"headers": {
+														"x-ms-command-name": "FinOpsToolkit.Hubs.config_RunExportJobs.ReservationTransactions@0.9",
+														"ClientType": "FinOpsToolkit.Hubs@0.9"
+													},
+													"url": {
+														"value": "@{variables('resourceManagementUri')}@{item().scope}/providers/Microsoft.CostManagement/exports/@{toLower(concat(variables('finOpsHub'), '-daily-reservationtransactions'))}?api-version=2023-07-01-preview",
+														"type": "Expression"
+													},
+													"body": {
+														"value": "{ \"properties\": { \"definition\": { \"dataSet\": { \"configuration\": { \"dataVersion\": \"2023-05-01\", \"filters\": [] }}, \"timeframe\": \"MonthToDate\", \"type\": \"ReservationTransactions\" }, \"deliveryInfo\": { \"destination\": { \"container\": \"msexports\", \"rootFolderPath\": \"@{if(startswith(item().scope, '/'), substring(item().scope, 1, sub(length(item().scope), 1)) ,item().scope)}\", \"type\": \"AzureBlob\", \"resourceId\": \"@{variables('storageAccountId')}\" } }, \"schedule\": { \"recurrence\": \"Daily\", \"recurrencePeriod\": { \"from\": \"2024-01-01T00:00:00.000Z\", \"to\": \"2050-02-01T00:00:00.000Z\" }, \"status\": \"Inactive\" }, \"format\": \"CSV\", \"partitionData\": \"true\", \"dataOverwriteBehavior\": \"CreateNewReport\", \"compressionMode\": \"None\" }, \"id\": \"@{variables('resourceManagementUri')}@{item().scope}/providers/Microsoft.CostManagement/exports/@{toLower(concat(variables('finOpsHub'), '-daily-reservationtransactions'))}\", \"name\": \"@{toLower(concat(variables('finOpsHub'), '-daily-reservationtransactions'))}\", \"type\": \"Microsoft.CostManagement/reports\", \"identity\": { \"type\": \"systemAssigned\" }, \"location\": \"global\" }",
+														"type": "Expression"
+													},
+													"authentication": {
+														"type": "MSI",
+														"resource": {
+															"value": "@variables('resourceManagementUri')",
+															"type": "Expression"
+														}
+													}
+												}
+											},
+											{
+												"name": "EA daily shared 30day virtualmachines",
+												"type": "WebActivity",
+												"dependsOn": [
+													{
+														"activity": "EA daily reservation transactions export",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"timeout": "0.00:05:00",
+													"retry": 2,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"method": "PUT",
+													"headers": {
+														"x-ms-command-name": "FinOpsToolkit.Hubs.config_RunExportJobs.ReservationRecommendations.VM.Shared.30d@0.9",
+														"ClientType": "FinOpsToolkit.Hubs@0.9"
+													},
+													"url": {
+														"value": "@{variables('resourceManagementUri')}@{item().scope}/providers/Microsoft.CostManagement/exports/@{toLower(concat(variables('finOpsHub'), '-daily-recommendations-shared-last30days-virtualmachines'))}?api-version=2023-07-01-preview",
+														"type": "Expression"
+													},
+													"body": {
+														"value": "{ \"properties\": { \"definition\": { \"dataSet\": { \"configuration\": { \"dataVersion\": \"2023-05-01\", \"filters\": [ { \"name\": \"reservationScope\", \"value\": \"Shared\" }, { \"name\": \"resourceType\", \"value\": \"VirtualMachines\" }, { \"name\": \"lookBackPeriod\", \"value\": \"Last30Days\" }] }}, \"timeframe\": \"MonthToDate\", \"type\": \"ReservationRecommendations\" }, \"deliveryInfo\": { \"destination\": { \"container\": \"msexports\", \"rootFolderPath\": \"@{if(startswith(item().scope, '/'), substring(item().scope, 1, sub(length(item().scope), 1)) ,item().scope)}\", \"type\": \"AzureBlob\", \"resourceId\": \"@{variables('storageAccountId')}\" } }, \"schedule\": { \"recurrence\": \"Daily\", \"recurrencePeriod\": { \"from\": \"2024-01-01T00:00:00.000Z\", \"to\": \"2050-02-01T00:00:00.000Z\" }, \"status\": \"Inactive\" }, \"format\": \"CSV\", \"partitionData\": \"true\", \"dataOverwriteBehavior\": \"CreateNewReport\", \"compressionMode\": \"None\" }, \"id\": \"@{variables('resourceManagementUri')}@{item().scope}/providers/Microsoft.CostManagement/exports/@{toLower(concat(variables('finOpsHub'), '-daily-costdetails'))}\", \"name\": \"@{toLower(concat(variables('finOpsHub'), '-daily-costdetails'))}\", \"type\": \"Microsoft.CostManagement/reports\", \"identity\": { \"type\": \"systemAssigned\" }, \"location\": \"global\" }",
+														"type": "Expression"
+													},
+													"authentication": {
+														"type": "MSI",
+														"resource": {
+															"value": "@variables('resourceManagementUri')",
+															"type": "Expression"
+														}
+													}
+												}
+											}
+										]
+									},
+									{
+										"value": "subscription",
+										"activities": [
+											{
+												"name": "Subscription open month focus export",
+												"type": "WebActivity",
+												"dependsOn": [],
+												"policy": {
+													"timeout": "0.00:05:00",
+													"retry": 2,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"method": "PUT",
+													"headers": {
+														"x-ms-command-name": "FinOpsToolkit.Hubs.config_RunExportJobs.CostsDaily@0.9",
+														"ClientType": "FinOpsToolkit.Hubs@0.9"
+													},
+													"url": {
+														"value": "@{variables('resourceManagementUri')}@{item().scope}/providers/Microsoft.CostManagement/exports/@{toLower(concat(variables('finOpsHub'), '-daily-costdetails'))}?api-version=2023-07-01-preview",
+														"type": "Expression"
+													},
+													"body": {
+														"value": "{ \"properties\": { \"definition\": { \"dataSet\": { \"configuration\": { \"dataVersion\": \"1.0\", \"filters\": [] }, \"granularity\": \"Daily\" }, \"timeframe\": \"MonthToDate\", \"type\": \"FocusCost\" }, \"deliveryInfo\": { \"destination\": { \"container\": \"msexports\", \"rootFolderPath\": \"@{if(startswith(item().scope, '/'), substring(item().scope, 1, sub(length(item().scope), 1)) ,item().scope)}\", \"type\": \"AzureBlob\", \"resourceId\": \"@{variables('storageAccountId')}\" } }, \"schedule\": { \"recurrence\": \"Daily\", \"recurrencePeriod\": { \"from\": \"2024-01-01T00:00:00.000Z\", \"to\": \"2050-02-01T00:00:00.000Z\" }, \"status\": \"Inactive\" }, \"format\": \"Parquet\", \"partitionData\": \"true\", \"dataOverwriteBehavior\": \"CreateNewReport\", \"compressionMode\": \"Snappy\" }, \"id\": \"@{variables('resourceManagementUri')}@{item().scope}/providers/Microsoft.CostManagement/exports/@{toLower(concat(variables('finOpsHub'), '-daily-costdetails'))}\", \"name\": \"@{toLower(concat(variables('finOpsHub'), '-daily-costdetails'))}\", \"type\": \"Microsoft.CostManagement/reports\", \"identity\": { \"type\": \"systemAssigned\" }, \"location\": \"global\" }",
+														"type": "Expression"
+													},
+													"authentication": {
+														"type": "MSI",
+														"resource": {
+															"value": "@variables('resourceManagementUri')",
+															"type": "Expression"
+														}
+													}
+												}
+											},
+											{
+												"name": "Subscription closed month focus export",
+												"type": "WebActivity",
+												"dependsOn": [
+													{
+														"activity": "Subscription open month focus export",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"timeout": "0.00:05:00",
+													"retry": 2,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"method": "PUT",
+													"headers": {
+														"x-ms-command-name": "FinOpsToolkit.Hubs.config_RunExportJobs.CostsMonthly@0.9",
+														"ClientType": "FinOpsToolkit.Hubs@0.9"
+													},
+													"url": {
+														"value": "@{variables('resourceManagementUri')}@{item().scope}/providers/Microsoft.CostManagement/exports/@{toLower(concat(variables('finOpsHub'), '-monthly-costdetails'))}?api-version=2023-07-01-preview",
+														"type": "Expression"
+													},
+													"body": {
+														"value": "{ \"properties\": { \"definition\": { \"dataSet\": { \"configuration\": { \"dataVersion\": \"1.0\", \"filters\": [] }, \"granularity\": \"Daily\" }, \"timeframe\": \"TheLastMonth\", \"type\": \"FocusCost\" }, \"deliveryInfo\": { \"destination\": { \"container\": \"msexports\", \"rootFolderPath\": \"@{if(startswith(item().scope, '/'), substring(item().scope, 1, sub(length(item().scope), 1)) ,item().scope)}\", \"type\": \"AzureBlob\", \"resourceId\": \"@{variables('storageAccountId')}\" } }, \"schedule\": { \"recurrence\": \"Monthly\", \"recurrencePeriod\": { \"from\": \"2024-01-01T00:00:00.000Z\", \"to\": \"2050-02-01T00:00:00.000Z\" }, \"status\": \"Inactive\" }, \"format\": \"Parquet\", \"partitionData\": \"true\", \"dataOverwriteBehavior\": \"CreateNewReport\", \"compressionMode\": \"Snappy\" }, \"id\": \"@{variables('resourceManagementUri')}@{item().scope}/providers/Microsoft.CostManagement/exports/@{toLower(concat(variables('finOpsHub'), '-monthly-costdetails'))}\", \"name\": \"@{toLower(concat(variables('finOpsHub'), '-monthly-costdetails'))}\", \"type\": \"Microsoft.CostManagement/reports\", \"identity\": { \"type\": \"systemAssigned\" }, \"location\": \"global\" }",
+														"type": "Expression"
+													},
+													"authentication": {
+														"type": "MSI",
+														"resource": {
+															"value": "@variables('resourceManagementUri')",
+															"type": "Expression"
+														}
+													}
+												}
+											}
+										]
+									},
+									{
+										"value": "mca",
+										"activities": [
+											{
+												"name": "Export Type Unsupported Error",
+												"type": "Fail",
+												"dependsOn": [],
+												"userProperties": [],
+												"typeProperties": {
+													"message": {
+														"value": "@concat('MCA agreements are not supported for managed exports :',variables('exportScope'))",
+														"type": "Expression"
+													},
+													"errorCode": "ExportTypeUnsupported"
+												}
+											}
+										]
+									}
+								],
+								"defaultActivities": [
+									{
+										"name": "Export Type Not Defined Error",
+										"type": "Fail",
+										"dependsOn": [],
+										"userProperties": [],
+										"typeProperties": {
+											"message": {
+												"value": "@concat('Unable to determine the export scope type for :',variables('exportScope'))",
+												"type": "Expression"
+											},
+											"errorCode": "ExportTypeNotDefined"
+										}
+									}
+								]
+							}
+						}
+					]
+				}
+			}
+		],
+		"concurrency": 1,
+		"variables": {
+			"scopesArray": {
+				"type": "Array"
+			},
+			"exportName": {
+				"type": "String"
+			},
+			"exportScope": {
+				"type": "String"
+			},
+			"exportScopeType": {
+				"type": "String"
+			},
+			"storageAccountId": {
+				"type": "String",
+				"defaultValue": "/subscriptions/1b81ff8b-445d-4ca6-a151-bbe399ca9ddb/resourceGroups/FinOps-Hub-RG/providers/Microsoft.Storage/storageAccounts/finopshubc2253n633nnpk"
+			},
+			"finOpsHub": {
+				"type": "String",
+				"defaultValue": "finops-hub"
+			},
+			"resourceManagementUri": {
+				"type": "String",
+				"defaultValue": "https://management.azure.com/"
+			},
+			"fileName": {
+				"type": "String",
+				"defaultValue": "settings.json"
+			},
+			"folderPath": {
+				"type": "String",
+				"defaultValue": "config"
+			}
+		},
+		"annotations": [],
+		"lastPublishTime": "2025-04-24T21:19:59Z"
+	},
+	"type": "Microsoft.DataFactory/factories/pipelines"
+}

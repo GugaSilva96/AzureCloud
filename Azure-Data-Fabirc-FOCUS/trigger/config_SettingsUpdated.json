@@ -1,0 +1,25 @@
+{
+	"name": "config_SettingsUpdated",
+	"properties": {
+		"annotations": [],
+		"runtimeState": "Started",
+		"pipelines": [
+			{
+				"pipelineReference": {
+					"referenceName": "config_ConfigureExports",
+					"type": "PipelineReference"
+				}
+			}
+		],
+		"type": "BlobEventsTrigger",
+		"typeProperties": {
+			"blobPathBeginsWith": "/config/blobs/",
+			"blobPathEndsWith": "settings.json",
+			"ignoreEmptyBlobs": true,
+			"scope": "/subscriptions/1b81ff8b-445d-4ca6-a151-bbe399ca9ddb/resourceGroups/FinOps-Hub-RG/providers/Microsoft.Storage/storageAccounts/finopshubc2253n633nnpk",
+			"events": [
+				"Microsoft.Storage.BlobCreated"
+			]
+		}
+	}
+}

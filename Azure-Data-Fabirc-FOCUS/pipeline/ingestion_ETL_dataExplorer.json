@@ -1,0 +1,438 @@
+{
+	"name": "ingestion_ETL_dataExplorer",
+	"properties": {
+		"activities": [
+			{
+				"name": "Read Hub Config",
+				"description": "Read the hub config to determine how long data should be retained.",
+				"type": "Lookup",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "JsonSource",
+						"storeSettings": {
+							"type": "AzureBlobFSReadSettings",
+							"recursive": false,
+							"enablePartitionDiscovery": false
+						},
+						"formatSettings": {
+							"type": "JsonReadSettings"
+						}
+					},
+					"dataset": {
+						"referenceName": "config",
+						"type": "DatasetReference",
+						"parameters": {
+							"fileName": "settings.json",
+							"folderPath": "config"
+						}
+					}
+				}
+			},
+			{
+				"name": "Set Final Retention Months",
+				"type": "SetVariable",
+				"dependsOn": [
+					{
+						"activity": "Read Hub Config",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"variableName": "finalRetentionMonths",
+					"value": {
+						"value": "@coalesce(activity('Read Hub Config').output.firstRow.retention.final.months, 999)",
+						"type": "Expression"
+					}
+				}
+			},
+			{
+				"name": "Until Capacity Is Available",
+				"type": "Until",
+				"dependsOn": [
+					{
+						"activity": "Set Final Retention Months",
+						"dependencyConditions": [
+							"Completed",
+							"Skipped"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"expression": {
+						"value": "@equals(variables('tryAgain'), false)",
+						"type": "Expression"
+					},
+					"activities": [
+						{
+							"name": "Confirm Ingestion Capacity",
+							"type": "AzureDataExplorerCommand",
+							"dependsOn": [],
+							"policy": {
+								"timeout": "0.12:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"command": ".show capacity | where Resource == 'Ingestions' | project Remaining",
+								"commandTimeout": "00:20:00"
+							},
+							"linkedServiceName": {
+								"referenceName": "hubDataExplorer",
+								"type": "LinkedServiceReference"
+							}
+						},
+						{
+							"name": "If Has Capacity",
+							"type": "IfCondition",
+							"dependsOn": [
+								{
+									"activity": "Confirm Ingestion Capacity",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"userProperties": [],
+							"typeProperties": {
+								"expression": {
+									"value": "@or(equals(activity('Confirm Ingestion Capacity').output.count, 0), greater(activity('Confirm Ingestion Capacity').output.value[0].Remaining, 0))",
+									"type": "Expression"
+								},
+								"ifFalseActivities": [
+									{
+										"name": "Wait for Ingestion",
+										"type": "Wait",
+										"dependsOn": [],
+										"userProperties": [],
+										"typeProperties": {
+											"waitTimeInSeconds": 15
+										}
+									},
+									{
+										"name": "Try Again",
+										"type": "SetVariable",
+										"dependsOn": [
+											{
+												"activity": "Wait for Ingestion",
+												"dependencyConditions": [
+													"Succeeded"
+												]
+											}
+										],
+										"policy": {
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"variableName": "tryAgain",
+											"value": true
+										}
+									}
+								],
+								"ifTrueActivities": [
+									{
+										"name": "Pre-Ingest Cleanup",
+										"description": "Cost Management exports include all month-to-date data from the previous export run. To ensure data is not double-reported, it must be dropped from the raw table before ingestion completes. Remove previous ingestions into the raw table for the month and any previous runs of the current ingestion month file in any table.",
+										"type": "AzureDataExplorerCommand",
+										"dependsOn": [],
+										"policy": {
+											"timeout": "0.12:00:00",
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"command": {
+												"value": "@concat('.drop extents <| .show extents | where (TableName == \"', pipeline().parameters.table, '\" and Tags !has \"drop-by:', pipeline().parameters.ingestionId, '\" and Tags has \"drop-by:', pipeline().parameters.folderPath, '\") or (Tags has \"drop-by:', pipeline().parameters.ingestionId, '\" and Tags has \"drop-by:', pipeline().parameters.folderPath, '/', pipeline().parameters.originalFileName, '\")')",
+												"type": "Expression"
+											},
+											"commandTimeout": "00:20:00"
+										},
+										"linkedServiceName": {
+											"referenceName": "hubDataExplorer",
+											"type": "LinkedServiceReference",
+											"parameters": {
+												"database": "Ingestion"
+											}
+										}
+									},
+									{
+										"name": "Ingest Data",
+										"type": "AzureDataExplorerCommand",
+										"dependsOn": [
+											{
+												"activity": "Pre-Ingest Cleanup",
+												"dependencyConditions": [
+													"Succeeded"
+												]
+											}
+										],
+										"policy": {
+											"timeout": "0.12:00:00",
+											"retry": 3,
+											"retryIntervalInSeconds": 120,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"command": {
+												"value": "@concat('.ingest into table ', pipeline().parameters.table, ' (\"abfss://ingestion@finopshubc2253n633nnpk.dfs.core.windows.net/', pipeline().parameters.folderPath, '/', pipeline().parameters.fileName, ';managed_identity=system\") with (format=\"parquet\", ingestionMappingReference=\"', pipeline().parameters.table, '_mapping\", tags=\"[\\\"drop-by:', pipeline().parameters.ingestionId, '\\\", \\\"drop-by:', pipeline().parameters.folderPath, '/', pipeline().parameters.originalFileName, '\\\", \\\"drop-by:ftk-version-0.9\\\"]\"); print Success = assert(iff(toscalar($command_results | project-keep HasErrors) == false, true, false), \"Ingestion Failed\")')",
+												"type": "Expression"
+											},
+											"commandTimeout": "01:00:00"
+										},
+										"linkedServiceName": {
+											"referenceName": "hubDataExplorer",
+											"type": "LinkedServiceReference",
+											"parameters": {
+												"database": "Ingestion"
+											}
+										}
+									},
+									{
+										"name": "Post-Ingest Cleanup",
+										"description": "Cost Management exports include all month-to-date data from the previous export run. To ensure data is not double-reported, it must be dropped after ingestion completes. Remove the current ingestion month file from raw and any old ingestions for the month from the final table.",
+										"type": "AzureDataExplorerCommand",
+										"dependsOn": [
+											{
+												"activity": "Ingest Data",
+												"dependencyConditions": [
+													"Completed"
+												]
+											}
+										],
+										"policy": {
+											"timeout": "0.12:00:00",
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"command": {
+												"value": "@concat('.drop extents <| .show extents | extend isOldFinalData = (TableName startswith \"', replace(pipeline().parameters.table, '_raw', '_final_v'), '\" and Tags !has \"drop-by:', pipeline().parameters.ingestionId, '\" and Tags has \"drop-by:', pipeline().parameters.folderPath, '\") | extend isPastFinalRetention = (TableName startswith \"', replace(pipeline().parameters.table, '_raw', '_final_v'), '\" and todatetime(substring(strcat(replace_string(extract(\"drop-by:[A-Za-z]+/(\\\\d{4}/\\\\d{2}(/\\\\d{2})?)\", 1, Tags), \"/\", \"-\"), \"-01\"), 0, 10)) < datetime_add(\"month\", -', if(lessOrEquals(variables('finalRetentionMonths'), 0), 0, variables('finalRetentionMonths')), ', startofmonth(now()))) | where isOldFinalData or isPastFinalRetention')",
+												"type": "Expression"
+											},
+											"commandTimeout": "00:20:00"
+										},
+										"linkedServiceName": {
+											"referenceName": "hubDataExplorer",
+											"type": "LinkedServiceReference",
+											"parameters": {
+												"database": "Ingestion"
+											}
+										}
+									},
+									{
+										"name": "Ingestion Complete",
+										"type": "SetVariable",
+										"dependsOn": [
+											{
+												"activity": "Post-Ingest Cleanup",
+												"dependencyConditions": [
+													"Succeeded"
+												]
+											}
+										],
+										"policy": {
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"variableName": "tryAgain",
+											"value": false
+										}
+									},
+									{
+										"name": "Abort On Ingestion Error",
+										"type": "SetVariable",
+										"dependsOn": [
+											{
+												"activity": "Ingest Data",
+												"dependencyConditions": [
+													"Failed"
+												]
+											}
+										],
+										"policy": {
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"variableName": "tryAgain",
+											"value": false
+										}
+									},
+									{
+										"name": "Ingestion Failed Error",
+										"type": "Fail",
+										"dependsOn": [
+											{
+												"activity": "Abort On Ingestion Error",
+												"dependencyConditions": [
+													"Succeeded"
+												]
+											}
+										],
+										"userProperties": [],
+										"typeProperties": {
+											"message": {
+												"value": "@concat('Data Explorer ingestion into the ', pipeline().parameters.table, ' table failed. Please fix the error and rerun ingestion for the following folder path: \"', pipeline().parameters.folderPath, '\". File: ', pipeline().parameters.originalFileName, '. Error: ', if(greater(length(activity('Ingest Data').output.errors), 0), activity('Ingest Data').output.errors[0].Message, 'Unknown'), ' (Code: ', if(greater(length(activity('Ingest Data').output.errors), 0), activity('Ingest Data').output.errors[0].Code, 'None'), ')')",
+												"type": "Expression"
+											},
+											"errorCode": "DataExplorerIngestionFailed"
+										}
+									},
+									{
+										"name": "Abort On Pre-Ingest Drop Error",
+										"type": "SetVariable",
+										"dependsOn": [
+											{
+												"activity": "Pre-Ingest Cleanup",
+												"dependencyConditions": [
+													"Failed"
+												]
+											}
+										],
+										"policy": {
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"variableName": "tryAgain",
+											"value": false
+										}
+									},
+									{
+										"name": "Pre-Ingest Drop Failed Error",
+										"type": "Fail",
+										"dependsOn": [
+											{
+												"activity": "Abort On Pre-Ingest Drop Error",
+												"dependencyConditions": [
+													"Succeeded"
+												]
+											}
+										],
+										"userProperties": [],
+										"typeProperties": {
+											"message": {
+												"value": "@concat('Data Explorer pre-ingestion cleanup (drop extents from raw table) for the ', pipeline().parameters.table, ' table failed. Ingestion was not completed. Please fix the error and rerun ingestion for the following folder path: \"', pipeline().parameters.folderPath, '\". File: ', pipeline().parameters.originalFileName, '. Error: ', if(greater(length(activity('Pre-Ingest Cleanup').output.errors), 0), activity('Pre-Ingest Cleanup').output.errors[0].Message, 'Unknown'), ' (Code: ', if(greater(length(activity('Pre-Ingest Cleanup').output.errors), 0), activity('Pre-Ingest Cleanup').output.errors[0].Code, 'None'), ')')",
+												"type": "Expression"
+											},
+											"errorCode": "DataExplorerPreIngestionDropFailed"
+										}
+									},
+									{
+										"name": "Abort On Post-Ingest Drop Error",
+										"type": "SetVariable",
+										"dependsOn": [
+											{
+												"activity": "Post-Ingest Cleanup",
+												"dependencyConditions": [
+													"Failed"
+												]
+											}
+										],
+										"policy": {
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"variableName": "tryAgain",
+											"value": false
+										}
+									},
+									{
+										"name": "Post-Ingest Drop Failed Error",
+										"type": "Fail",
+										"dependsOn": [
+											{
+												"activity": "Abort On Post-Ingest Drop Error",
+												"dependencyConditions": [
+													"Succeeded"
+												]
+											}
+										],
+										"userProperties": [],
+										"typeProperties": {
+											"message": {
+												"value": "@concat('Data Explorer post-ingestion cleanup (drop extents from final tables) for the ', replace(pipeline().parameters.table, '_raw', '_final_*'), ' table failed. Please fix the error and rerun ingestion for the following folder path: \"', pipeline().parameters.folderPath, '\". File: ', pipeline().parameters.originalFileName, '. Error: ', if(greater(length(activity('Post-Ingest Cleanup').output.errors), 0), activity('Post-Ingest Cleanup').output.errors[0].Message, 'Unknown'), ' (Code: ', if(greater(length(activity('Post-Ingest Cleanup').output.errors), 0), activity('Post-Ingest Cleanup').output.errors[0].Code, 'None'), ')')",
+												"type": "Expression"
+											},
+											"errorCode": "DataExplorerPostIngestionDropFailed"
+										}
+									}
+								]
+							}
+						}
+					],
+					"timeout": "0.02:00:00"
+				}
+			}
+		],
+		"parameters": {
+			"folderPath": {
+				"type": "string"
+			},
+			"fileName": {
+				"type": "string"
+			},
+			"originalFileName": {
+				"type": "string"
+			},
+			"ingestionId": {
+				"type": "string"
+			},
+			"table": {
+				"type": "string"
+			}
+		},
+		"variables": {
+			"tryAgain": {
+				"type": "Boolean",
+				"defaultValue": true
+			},
+			"logRetentionDays": {
+				"type": "Integer",
+				"defaultValue": 0
+			},
+			"finalRetentionMonths": {
+				"type": "Integer",
+				"defaultValue": 999
+			}
+		},
+		"annotations": [],
+		"lastPublishTime": "2025-04-24T21:19:59Z"
+	},
+	"type": "Microsoft.DataFactory/factories/pipelines"
+}

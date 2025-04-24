@@ -1,0 +1,11 @@
+{
+	"name": "finopshubc2253n633nnpk",
+	"type": "Microsoft.DataFactory/factories/linkedservices",
+	"properties": {
+		"annotations": [],
+		"type": "AzureBlobFS",
+		"typeProperties": {
+			"url": "https://finopshubc2253n633nnpk.dfs.core.windows.net/"
+		}
+	}
+}

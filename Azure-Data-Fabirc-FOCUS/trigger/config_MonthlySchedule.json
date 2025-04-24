@@ -1,0 +1,34 @@
+{
+	"name": "config_MonthlySchedule",
+	"properties": {
+		"annotations": [],
+		"runtimeState": "Started",
+		"pipelines": [
+			{
+				"pipelineReference": {
+					"referenceName": "config_StartExportProcess",
+					"type": "PipelineReference"
+				},
+				"parameters": {
+					"Recurrence": "Monthly"
+				}
+			}
+		],
+		"type": "ScheduleTrigger",
+		"typeProperties": {
+			"recurrence": {
+				"frequency": "Month",
+				"interval": 1,
+				"startTime": "2023-01-05T01:11:00",
+				"timeZone": "E. South America Standard Time",
+				"schedule": {
+					"monthDays": [
+						2,
+						5,
+						19
+					]
+				}
+			}
+		}
+	}
+}

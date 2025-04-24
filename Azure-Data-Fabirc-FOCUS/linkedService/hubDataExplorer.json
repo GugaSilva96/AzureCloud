@@ -1,0 +1,20 @@
+{
+	"name": "hubDataExplorer",
+	"type": "Microsoft.DataFactory/factories/linkedservices",
+	"properties": {
+		"type": "AzureDataExplorer",
+		"parameters": {
+			"database": {
+				"type": "String",
+				"defaultValue": "Ingestion"
+			}
+		},
+		"typeProperties": {
+			"endpoint": "https://finops-hub-cluster.brazilsouth.kusto.windows.net",
+			"database": "@{linkedService().database}",
+			"tenant": "24ae69ba-b794-4855-9f5e-db980ebad23c",
+			"servicePrincipalId": "7d6fc0bb-8387-4226-aea2-cbff32821c54"
+		},
+		"annotations": []
+	}
+}

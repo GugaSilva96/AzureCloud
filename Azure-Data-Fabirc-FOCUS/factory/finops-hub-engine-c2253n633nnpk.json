@@ -1,0 +1,14 @@
+{
+	"name": "finops-hub-engine-c2253n633nnpk",
+	"properties": {
+		"globalConfigurations": {
+			"PipelineBillingEnabled": "true"
+		}
+	},
+	"location": "brazilsouth",
+	"identity": {
+		"type": "SystemAssigned",
+		"principalId": "7d6fc0bb-8387-4226-aea2-cbff32821c54",
+		"tenantId": "24ae69ba-b794-4855-9f5e-db980ebad23c"
+	}
+}

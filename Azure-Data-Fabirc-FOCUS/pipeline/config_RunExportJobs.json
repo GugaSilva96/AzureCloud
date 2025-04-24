@@ -1,0 +1,91 @@
+{
+	"name": "config_RunExportJobs",
+	"properties": {
+		"activities": [
+			{
+				"name": "ForEach export scope",
+				"type": "ForEach",
+				"dependsOn": [],
+				"userProperties": [],
+				"typeProperties": {
+					"items": {
+						"value": "@pipeline().parameters.exportScopes",
+						"type": "Expression"
+					},
+					"isSequential": true,
+					"activities": [
+						{
+							"name": "If scheduled",
+							"type": "IfCondition",
+							"dependsOn": [],
+							"userProperties": [],
+							"typeProperties": {
+								"expression": {
+									"value": "@and( startswith(toLower(item().name), toLower(variables('hubName'))), and(contains(string(item().properties.schedule), 'recurrence'), equals(toLower(item().properties.schedule.recurrence), toLower(pipeline().parameters.Recurrence))))",
+									"type": "Expression"
+								},
+								"ifTrueActivities": [
+									{
+										"name": "Trigger export",
+										"type": "WebActivity",
+										"dependsOn": [],
+										"policy": {
+											"timeout": "0.00:05:00",
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"method": "POST",
+											"headers": {
+												"x-ms-command-name": "FinOpsToolkit.Hubs.config_RunExportJobs@0.9",
+												"ClientType": "FinOpsToolkit.Hubs@0.9"
+											},
+											"url": {
+												"value": "@{replace(toLower(concat(variables('resourceManagementUri'),item().id)), 'com//', 'com/')}/run?api-version=2023-07-01-preview",
+												"type": "Expression"
+											},
+											"body": " ",
+											"authentication": {
+												"type": "MSI",
+												"resource": {
+													"value": "@variables('resourceManagementUri')",
+													"type": "Expression"
+												}
+											}
+										}
+									}
+								]
+							}
+						}
+					]
+				}
+			}
+		],
+		"concurrency": 1,
+		"parameters": {
+			"ExportScopes": {
+				"type": "array"
+			},
+			"Recurrence": {
+				"type": "string",
+				"defaultValue": "Daily"
+			}
+		},
+		"variables": {
+			"resourceManagementUri": {
+				"type": "String",
+				"defaultValue": "https://management.azure.com/"
+			},
+			"hubName": {
+				"type": "String",
+				"defaultValue": "finops-hub"
+			}
+		},
+		"annotations": [],
+		"lastPublishTime": "2025-04-24T21:19:59Z"
+	},
+	"type": "Microsoft.DataFactory/factories/pipelines"
+}
